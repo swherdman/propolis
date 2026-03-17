@@ -8,6 +8,9 @@ on:
       - '.github/workflows/rust.yml'
   workflow_dispatch:
 
+env:
+  CARGO_TARGET_DIR: /home/swherdman/cache/propolis-target
+
 jobs:
   build:
     runs-on: [self-hosted, helios]
@@ -19,6 +22,7 @@ jobs:
         run: |
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
           echo "/opt/ooce/node-18/bin" >> $GITHUB_PATH
+          mkdir -p $CARGO_TARGET_DIR
 
       - name: Build propolis-server (release)
         run: |
@@ -35,7 +39,7 @@ jobs:
 
       - name: Package artifacts
         run: |
-          gzip -c target/release/propolis-server > propolis-server.gz
+          gzip -c $CARGO_TARGET_DIR/release/propolis-server > propolis-server.gz
           ls -lh propolis-server.gz
           sha256sum propolis-server.gz > propolis-server.gz.sha256
           sed "s/__RELEASE_TAG__/${{ steps.version.outputs.tag }}/" patch-propolis.sh > patch-propolis-release.sh
