@@ -26,20 +26,20 @@ jobs:
           rustc -V
           cargo build --release --bin propolis-server
 
-      - name: Compress binary
+      - name: Get version info
+        id: version
+        run: |
+          PATCH_HASH=$(git log --format='%h' -1)
+          echo "tag=patched-${PATCH_HASH}" >> $GITHUB_OUTPUT
+          echo "patch=${PATCH_HASH}" >> $GITHUB_OUTPUT
+
+      - name: Package artifacts
         run: |
           gzip -c target/release/propolis-server > propolis-server.gz
           ls -lh propolis-server.gz
           sha256sum propolis-server.gz > propolis-server.gz.sha256
-
-      - name: Get version info
-        id: version
-        run: |
-          UPSTREAM_HASH=$(git log --format='%h' -1 HEAD~1 2>/dev/null || git log --format='%h' -1)
-          PATCH_HASH=$(git log --format='%h' -1)
-          echo "tag=patched-${PATCH_HASH}" >> $GITHUB_OUTPUT
-          echo "upstream=${UPSTREAM_HASH}" >> $GITHUB_OUTPUT
-          echo "patch=${PATCH_HASH}" >> $GITHUB_OUTPUT
+          sed "s/__RELEASE_TAG__/${{ steps.version.outputs.tag }}/" patch-propolis.sh > patch-propolis-release.sh
+          chmod +x patch-propolis-release.sh
 
       - name: Create release
         uses: softprops/action-gh-release@v2
@@ -52,16 +52,57 @@ jobs:
             - Branch: `string-io-emulation`
             - Commit: `${{ steps.version.outputs.patch }}`
             - Built on: helios01 (illumos)
-            - Rust: `1.91.1`
 
-            ## Usage
+            ## Quick install (recommended)
             ```bash
-            curl -L https://github.com/swherdman/propolis/releases/download/${{ steps.version.outputs.tag }}/propolis-server.gz | gunzip > propolis-server
+            curl -fL https://github.com/swherdman/propolis/releases/download/${{ steps.version.outputs.tag }}/patch-propolis.sh | bash
+            ```
+            Auto-detects fresh deploy vs existing deployment. Downloads the binary, swaps it into the tarball, and tells you the next step.
+
+            ## Manual instructions
+
+            ### 1. Download the patched binary
+            ```bash
+            curl -fL https://github.com/swherdman/propolis/releases/download/${{ steps.version.outputs.tag }}/propolis-server.gz \
+              | gunzip > /tmp/propolis-server
+            chmod +x /tmp/propolis-server
             ```
 
-            Replace the binary inside `/opt/oxide/propolis-server.tar.gz` after `omicron-package install`.
+            ### 2. Swap into the tarball
+            **Fresh deploy** (tarball at `~/omicron/out/`):
+            ```bash
+            cd /tmp && mkdir propolis-repack && cd propolis-repack
+            tar xzf ~/omicron/out/propolis-server.tar.gz
+            cp /tmp/propolis-server root/opt/oxide/propolis-server/bin/propolis-server
+            tar czf ~/omicron/out/propolis-server.tar.gz oxide.json root/
+            rm -rf /tmp/propolis-repack /tmp/propolis-server
+            ```
+
+            **Existing deployment** (tarball at `/opt/oxide/`):
+            ```bash
+            cd /tmp && mkdir propolis-repack && cd propolis-repack
+            tar xzf /opt/oxide/propolis-server.tar.gz
+            cp /tmp/propolis-server root/opt/oxide/propolis-server/bin/propolis-server
+            pfexec tar czf /opt/oxide/propolis-server.tar.gz oxide.json root/
+            rm -rf /tmp/propolis-repack /tmp/propolis-server
+            ```
+
+            ### 3. Install / reinstall
+            **Fresh deploy:**
+            ```bash
+            cd ~/omicron && pfexec ./target/release/omicron-package install
+            ```
+
+            **Existing deployment:**
+            ```bash
+            cd ~/omicron
+            pfexec ./target/release/omicron-package uninstall
+            pfexec ./target/release/omicron-package install
+            # Wait 5-8 min for zones to come back
+            ```
           files: |
             propolis-server.gz
             propolis-server.gz.sha256
+            patch-propolis-release.sh
           draft: false
           prerelease: false
