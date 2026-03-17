@@ -122,29 +122,15 @@ jobs:
                 chmod +x patch-propolis-release.sh
               fi
 
-              # Create release
-              RELEASE_BODY=$(cat <<RELEOF
-              Pre-built propolis-server with string I/O emulation patch.
-              - Upstream: oxidecomputer/propolis@${SHORT}
-              - Commit: ${MSG}
-              - Built on: helios01
-              - Build time: ${BUILD_TIME}s
-              Quick install: curl -fL https://github.com/${{ github.repository }}/releases/download/patched-${SHORT}/patch-propolis.sh | bash
-              RELEOF
-              )
-
+              # Create release via API
+              RELEASE_BODY="Pre-built propolis-server with string I/O emulation patch. Upstream: oxidecomputer/propolis@${SHORT} | Commit: ${MSG} | Built on: helios01 | Build time: ${BUILD_TIME}s | Quick install: curl -fL https://github.com/${{ github.repository }}/releases/download/patched-${SHORT}/patch-propolis.sh | bash"
+              RELEASE_JSON=$(python3 -c "import json,sys; print(json.dumps({'tag_name':'patched-${SHORT}','target_commitish':'string-io-emulation','name':'propolis-server patched (upstream ${SHORT})','body':sys.argv[1],'draft':False,'prerelease':False}))" "$RELEASE_BODY")
               RELEASE_ID=$(curl -s -X POST \
                 -H "Authorization: token ${{ github.token }}" \
                 -H "Accept: application/vnd.github.v3+json" \
+                -H "Content-Type: application/json" \
                 "https://api.github.com/repos/${{ github.repository }}/releases" \
-                -d "{
-                  \"tag_name\": \"patched-${SHORT}\",
-                  \"target_commitish\": \"string-io-emulation\",
-                  \"name\": \"propolis-server patched (upstream ${SHORT})\",
-                  \"body\": $(echo "$RELEASE_BODY" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'),
-                  \"draft\": false,
-                  \"prerelease\": false
-                }" | python3 -c "import json,sys; print(json.load(sys.stdin).get('id',''))")
+                -d "$RELEASE_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin).get('id',''))")
 
               if [ -n "$RELEASE_ID" ] && [ "$RELEASE_ID" != "None" ]; then
                 for FILE in propolis-server.gz propolis-server.gz.sha256 patch-propolis-release.sh; do
