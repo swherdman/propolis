@@ -2,7 +2,7 @@ name: Sync upstream and build patched releases
 
 on:
   schedule:
-    - cron: '0 6 * * 1'  # Weekly, Monday 6am UTC
+    - cron: '0 6 * * *'  # Daily at 6am UTC
   workflow_dispatch:
 
 env:
@@ -123,14 +123,19 @@ jobs:
               fi
 
               # Create release via API
-              RELEASE_BODY="Pre-built propolis-server with string I/O emulation patch. Upstream: oxidecomputer/propolis@${SHORT} | Commit: ${MSG} | Built on: helios01 | Build time: ${BUILD_TIME}s | Quick install: curl -fL https://github.com/${{ github.repository }}/releases/download/patched-${SHORT}/patch-propolis.sh | bash"
-              RELEASE_JSON=$(python3 -c "import json,sys; print(json.dumps({'tag_name':'patched-${SHORT}','target_commitish':'string-io-emulation','name':'propolis-server patched (upstream ${SHORT})','body':sys.argv[1],'draft':False,'prerelease':False}))" "$RELEASE_BODY")
+              TAG="patched-${SHORT}"
+              REPO="${{ github.repository }}"
+              BODY=$(sed "s/__SHORT__/${SHORT}/g; s/__TAG__/${TAG}/g; s|__REPO__|${REPO}|g" .github/release-body.md)
+              RELEASE_JSON=$(jq -n \
+                --arg tag "$TAG" \
+                --arg body "$BODY" \
+                '{tag_name: $tag, target_commitish: "string-io-emulation", name: $tag, body: $body, draft: false, prerelease: false}')
               RELEASE_ID=$(curl -s -X POST \
                 -H "Authorization: token ${{ github.token }}" \
                 -H "Accept: application/vnd.github.v3+json" \
                 -H "Content-Type: application/json" \
-                "https://api.github.com/repos/${{ github.repository }}/releases" \
-                -d "$RELEASE_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin).get('id',''))")
+                "https://api.github.com/repos/${REPO}/releases" \
+                -d "$RELEASE_JSON" | jq -r '.id // empty')
 
               if [ -n "$RELEASE_ID" ] && [ "$RELEASE_ID" != "None" ]; then
                 for FILE in propolis-server.gz propolis-server.gz.sha256 patch-propolis-release.sh; do
@@ -158,14 +163,14 @@ jobs:
       - name: Sync master with upstream
         if: steps.commits.outputs.count != '0'
         run: |
-          git checkout master
+          git checkout -B master origin/master
           git merge upstream/master --ff-only
           git push origin master
 
       - name: Rebase patch branch
         if: steps.commits.outputs.count != '0'
         run: |
-          git checkout string-io-emulation
+          git checkout -B string-io-emulation origin/string-io-emulation
           if git rebase master; then
             git push origin string-io-emulation --force-with-lease
             echo "Patch branch rebased and pushed"
