@@ -1,0 +1,67 @@
+name: Build patched propolis-server
+
+on:
+  push:
+    branches: [string-io-emulation]
+    paths-ignore:
+      - '*.md'
+      - '.github/workflows/rust.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: [self-hosted, helios]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup environment
+        run: |
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          echo "/opt/ooce/node-18/bin" >> $GITHUB_PATH
+
+      - name: Build propolis-server (release)
+        run: |
+          source $HOME/.cargo/env
+          rustc -V
+          cargo build --release --bin propolis-server
+
+      - name: Compress binary
+        run: |
+          gzip -c target/release/propolis-server > propolis-server.gz
+          ls -lh propolis-server.gz
+          sha256sum propolis-server.gz > propolis-server.gz.sha256
+
+      - name: Get version info
+        id: version
+        run: |
+          UPSTREAM_HASH=$(git log --format='%h' -1 HEAD~1 2>/dev/null || git log --format='%h' -1)
+          PATCH_HASH=$(git log --format='%h' -1)
+          echo "tag=patched-${PATCH_HASH}" >> $GITHUB_OUTPUT
+          echo "upstream=${UPSTREAM_HASH}" >> $GITHUB_OUTPUT
+          echo "patch=${PATCH_HASH}" >> $GITHUB_OUTPUT
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: "propolis-server patched (${{ steps.version.outputs.patch }})"
+          body: |
+            Pre-built propolis-server with string I/O emulation patch for nested virtualization (Proxmox/QEMU).
+
+            - Branch: `string-io-emulation`
+            - Commit: `${{ steps.version.outputs.patch }}`
+            - Built on: helios01 (illumos)
+            - Rust: `1.91.1`
+
+            ## Usage
+            ```bash
+            curl -L https://github.com/swherdman/propolis/releases/download/${{ steps.version.outputs.tag }}/propolis-server.gz | gunzip > propolis-server
+            ```
+
+            Replace the binary inside `/opt/oxide/propolis-server.tar.gz` after `omicron-package install`.
+          files: |
+            propolis-server.gz
+            propolis-server.gz.sha256
+          draft: false
+          prerelease: false
