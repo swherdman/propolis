@@ -1,0 +1,131 @@
+name: Sync upstream and build patched release
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'  # Weekly, Monday 6am UTC
+  workflow_dispatch:
+
+jobs:
+  sync-and-build:
+    runs-on: [self-hosted, helios]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: string-io-emulation
+          fetch-depth: 0
+
+      - name: Setup environment
+        run: |
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          echo "/opt/ooce/node-18/bin" >> $GITHUB_PATH
+          mkdir -p $CARGO_TARGET_DIR
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/oxidecomputer/propolis.git 2>/dev/null || true
+          git fetch upstream master
+
+      - name: Check if build needed
+        id: check
+        run: |
+          UPSTREAM_HEAD=$(git rev-parse --short=7 upstream/master)
+          echo "upstream_head=${UPSTREAM_HEAD}" >> $GITHUB_OUTPUT
+
+          # Check if release already exists for this upstream commit
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            "https://github.com/swherdman/propolis/releases/tag/patched-${UPSTREAM_HEAD}")
+
+          if [ "$STATUS" = "200" ]; then
+            echo "Release patched-${UPSTREAM_HEAD} already exists, skipping"
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "No release for upstream ${UPSTREAM_HEAD}, building"
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Sync master with upstream
+        if: steps.check.outputs.skip == 'false'
+        run: |
+          git checkout master
+          git merge upstream/master
+          git push origin master
+
+      - name: Rebase patch onto upstream
+        id: rebase
+        if: steps.check.outputs.skip == 'false'
+        run: |
+          git checkout string-io-emulation
+          if git rebase master; then
+            echo "Rebase succeeded"
+            git push origin string-io-emulation --force-with-lease
+            echo "conflict=false" >> $GITHUB_OUTPUT
+          else
+            echo "Rebase failed — conflict detected"
+            git rebase --abort
+            echo "conflict=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Open issue on conflict
+        if: steps.rebase.outputs.conflict == 'true'
+        run: |
+          curl -s -X POST \
+            -H "Authorization: token ${{ github.token }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${{ github.repository }}/issues" \
+            -d "{
+              \"title\": \"Rebase conflict: upstream ${{ steps.check.outputs.upstream_head }}\",
+              \"body\": \"The string-io-emulation patch failed to rebase onto upstream master (${{ steps.check.outputs.upstream_head }}).\\n\\nManually resolve:\\n\\\`\\\`\\\`bash\\ngit fetch upstream master\\ngit checkout string-io-emulation\\ngit rebase upstream/master\\n# resolve conflicts\\ngit push origin string-io-emulation --force-with-lease\\n\\\`\\\`\\\`\",
+              \"labels\": [\"rebase-conflict\"]
+            }"
+
+      - name: Build propolis-server
+        if: steps.check.outputs.skip == 'false' && steps.rebase.outputs.conflict != 'true'
+        run: |
+          source $HOME/.cargo/env
+          rustc -V
+          cargo build --release --bin propolis-server
+
+      - name: Package and release
+        if: steps.check.outputs.skip == 'false' && steps.rebase.outputs.conflict != 'true'
+        run: |
+          UPSTREAM_HEAD=${{ steps.check.outputs.upstream_head }}
+
+          gzip -c $CARGO_TARGET_DIR/release/propolis-server > propolis-server.gz
+          sha256sum propolis-server.gz > propolis-server.gz.sha256
+          sed "s/__RELEASE_TAG__/patched-${UPSTREAM_HEAD}/" patch-propolis.sh > patch-propolis-release.sh
+          chmod +x patch-propolis-release.sh
+
+          ls -lh propolis-server.gz
+
+      - name: Create release
+        if: steps.check.outputs.skip == 'false' && steps.rebase.outputs.conflict != 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: patched-${{ steps.check.outputs.upstream_head }}
+          name: "propolis-server patched (upstream ${{ steps.check.outputs.upstream_head }})"
+          body: |
+            Pre-built propolis-server with string I/O emulation patch for nested virtualization (Proxmox/QEMU).
+
+            - Upstream base: `oxidecomputer/propolis@${{ steps.check.outputs.upstream_head }}`
+            - Branch: `string-io-emulation`
+            - Built on: helios01 (illumos)
+
+            ## Quick install
+            ```bash
+            curl -fL https://github.com/swherdman/propolis/releases/download/patched-${{ steps.check.outputs.upstream_head }}/patch-propolis.sh | bash
+            ```
+          files: |
+            propolis-server.gz
+            propolis-server.gz.sha256
+            patch-propolis-release.sh
+          draft: false
+          prerelease: false
+
+env:
+  CARGO_TARGET_DIR: /home/swherdman/cache/propolis-target
