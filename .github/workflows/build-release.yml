@@ -47,65 +47,19 @@ jobs:
           sed "s/__RELEASE_TAG__/${{ steps.version.outputs.tag }}/" patch-propolis.sh > patch-propolis-release.sh
           chmod +x patch-propolis-release.sh
 
+      - name: Generate release body
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          SHORT="${{ steps.version.outputs.base }}"
+          REPO="${{ github.repository }}"
+          sed "s/__SHORT__/${SHORT}/g; s/__TAG__/${TAG}/g; s|__REPO__|${REPO}|g" .github/release-body.md > /tmp/release-body.md
+
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
-          name: "propolis-server patched (upstream ${{ steps.version.outputs.base }})"
-          body: |
-            Pre-built propolis-server with string I/O emulation patch for nested virtualization (Proxmox/QEMU).
-
-            - Upstream base: `oxidecomputer/propolis@${{ steps.version.outputs.base }}`
-            - Branch: `string-io-emulation`
-            - Built on: helios01 (illumos)
-
-            ## Quick install (recommended)
-            ```bash
-            curl -fL https://github.com/swherdman/propolis/releases/download/${{ steps.version.outputs.tag }}/patch-propolis.sh | bash
-            ```
-            Auto-detects fresh deploy vs existing deployment. Downloads the binary, swaps it into the tarball, and tells you the next step.
-
-            ## Manual instructions
-
-            ### 1. Download the patched binary
-            ```bash
-            curl -fL https://github.com/swherdman/propolis/releases/download/${{ steps.version.outputs.tag }}/propolis-server.gz \
-              | gunzip > /tmp/propolis-server
-            chmod +x /tmp/propolis-server
-            ```
-
-            ### 2. Swap into the tarball
-            **Fresh deploy** (tarball at `~/omicron/out/`):
-            ```bash
-            cd /tmp && mkdir propolis-repack && cd propolis-repack
-            tar xzf ~/omicron/out/propolis-server.tar.gz
-            cp /tmp/propolis-server root/opt/oxide/propolis-server/bin/propolis-server
-            tar czf ~/omicron/out/propolis-server.tar.gz oxide.json root/
-            rm -rf /tmp/propolis-repack /tmp/propolis-server
-            ```
-
-            **Existing deployment** (tarball at `/opt/oxide/`):
-            ```bash
-            cd /tmp && mkdir propolis-repack && cd propolis-repack
-            tar xzf /opt/oxide/propolis-server.tar.gz
-            cp /tmp/propolis-server root/opt/oxide/propolis-server/bin/propolis-server
-            pfexec tar czf /opt/oxide/propolis-server.tar.gz oxide.json root/
-            rm -rf /tmp/propolis-repack /tmp/propolis-server
-            ```
-
-            ### 3. Install / reinstall
-            **Fresh deploy:**
-            ```bash
-            cd ~/omicron && pfexec ./target/release/omicron-package install
-            ```
-
-            **Existing deployment:**
-            ```bash
-            cd ~/omicron
-            pfexec ./target/release/omicron-package uninstall
-            pfexec ./target/release/omicron-package install
-            # Wait 5-8 min for zones to come back
-            ```
+          name: ${{ steps.version.outputs.tag }}
+          body_path: /tmp/release-body.md
           files: |
             propolis-server.gz
             propolis-server.gz.sha256
