@@ -5,7 +5,7 @@ on:
     branches: [string-io-emulation]
     paths-ignore:
       - '*.md'
-      - '.github/workflows/rust.yml'
+      - '.github/**'
   workflow_dispatch:
 
 env:
@@ -33,9 +33,11 @@ jobs:
       - name: Get version info
         id: version
         run: |
-          PATCH_HASH=$(git log --format='%h' -1)
-          echo "tag=patched-${PATCH_HASH}" >> $GITHUB_OUTPUT
-          echo "patch=${PATCH_HASH}" >> $GITHUB_OUTPUT
+          git remote add upstream https://github.com/oxidecomputer/propolis.git 2>/dev/null || true
+          git fetch upstream master --depth=1
+          UPSTREAM_BASE=$(git merge-base upstream/master HEAD | head -c 7)
+          echo "tag=patched-${UPSTREAM_BASE}" >> $GITHUB_OUTPUT
+          echo "base=${UPSTREAM_BASE}" >> $GITHUB_OUTPUT
 
       - name: Package artifacts
         run: |
@@ -49,12 +51,12 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
-          name: "propolis-server patched (${{ steps.version.outputs.patch }})"
+          name: "propolis-server patched (upstream ${{ steps.version.outputs.base }})"
           body: |
             Pre-built propolis-server with string I/O emulation patch for nested virtualization (Proxmox/QEMU).
 
+            - Upstream base: `oxidecomputer/propolis@${{ steps.version.outputs.base }}`
             - Branch: `string-io-emulation`
-            - Commit: `${{ steps.version.outputs.patch }}`
             - Built on: helios01 (illumos)
 
             ## Quick install (recommended)
