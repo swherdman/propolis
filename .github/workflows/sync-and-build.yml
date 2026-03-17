@@ -123,17 +123,15 @@ jobs:
               fi
 
               # Create release
-              RELEASE_BODY="Pre-built propolis-server with string I/O emulation patch.
-
-- Upstream: \`oxidecomputer/propolis@${SHORT}\`
-- Commit: ${MSG}
-- Built on: helios01
-- Build time: ${BUILD_TIME}s
-
-## Quick install
-\`\`\`bash
-curl -fL https://github.com/${{ github.repository }}/releases/download/patched-${SHORT}/patch-propolis.sh | bash
-\`\`\`"
+              RELEASE_BODY=$(cat <<RELEOF
+              Pre-built propolis-server with string I/O emulation patch.
+              - Upstream: oxidecomputer/propolis@${SHORT}
+              - Commit: ${MSG}
+              - Built on: helios01
+              - Build time: ${BUILD_TIME}s
+              Quick install: curl -fL https://github.com/${{ github.repository }}/releases/download/patched-${SHORT}/patch-propolis.sh | bash
+              RELEOF
+              )
 
               RELEASE_ID=$(curl -s -X POST \
                 -H "Authorization: token ${{ github.token }}" \
