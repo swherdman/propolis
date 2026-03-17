@@ -1,0 +1,196 @@
+name: Backfill patched releases
+
+# One-off workflow to build patched releases for all upstream commits
+# between the fork point and current HEAD. Run manually via workflow_dispatch.
+
+on:
+  workflow_dispatch:
+    inputs:
+      start_commit:
+        description: 'Start commit (exclusive, fork point). Leave empty to auto-detect.'
+        required: false
+        default: ''
+      end_commit:
+        description: 'End commit (inclusive). Leave empty for upstream HEAD.'
+        required: false
+        default: ''
+      dry_run:
+        description: 'Dry run — list commits but do not build'
+        required: false
+        default: 'false'
+
+jobs:
+  backfill:
+    runs-on: [self-hosted, helios]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: string-io-emulation
+          fetch-depth: 0
+
+      - name: Setup environment
+        run: |
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          echo "/opt/ooce/node-18/bin" >> $GITHUB_PATH
+          mkdir -p $CARGO_TARGET_DIR
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/oxidecomputer/propolis.git 2>/dev/null || true
+          git fetch upstream master
+
+      - name: Determine commit range
+        id: range
+        run: |
+          if [ -n "${{ inputs.start_commit }}" ]; then
+            START="${{ inputs.start_commit }}"
+          else
+            START=$(git merge-base upstream/master HEAD)
+          fi
+
+          if [ -n "${{ inputs.end_commit }}" ]; then
+            END="${{ inputs.end_commit }}"
+          else
+            END=$(git rev-parse upstream/master)
+          fi
+
+          echo "start=${START}" >> $GITHUB_OUTPUT
+          echo "end=${END}" >> $GITHUB_OUTPUT
+
+          COMMITS=$(git rev-list --reverse ${START}..${END})
+          COUNT=$(echo "$COMMITS" | wc -l)
+          echo "Total commits to backfill: ${COUNT}"
+          echo "$COMMITS" | while read hash; do
+            SHORT=$(echo $hash | head -c 7)
+            MSG=$(git log --format='%s' -1 $hash)
+            echo "  ${SHORT} ${MSG}"
+          done
+
+      - name: Save patch
+        run: |
+          # Extract just the patch commits (everything after the fork point)
+          FORK_POINT=$(git merge-base upstream/master HEAD)
+          git format-patch ${FORK_POINT}..HEAD --stdout > /tmp/string-io-patch.patch
+          echo "Patch saved ($(wc -l < /tmp/string-io-patch.patch) lines)"
+
+      - name: Build for each upstream commit
+        if: inputs.dry_run != 'true'
+        run: |
+          source $HOME/.cargo/env
+          START=${{ steps.range.outputs.start }}
+          END=${{ steps.range.outputs.end }}
+          COMMITS=$(git rev-list --reverse ${START}..${END})
+          TOTAL=$(echo "$COMMITS" | wc -l)
+          CURRENT=0
+
+          for UPSTREAM_HASH in $COMMITS; do
+            CURRENT=$((CURRENT + 1))
+            SHORT=$(echo $UPSTREAM_HASH | head -c 7)
+            MSG=$(git log --format='%s' -1 $UPSTREAM_HASH)
+
+            echo ""
+            echo "=== [$CURRENT/$TOTAL] Building for upstream ${SHORT}: ${MSG} ==="
+
+            # Check if release already exists
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+              "https://github.com/swherdman/propolis/releases/tag/patched-${SHORT}")
+            if [ "$STATUS" = "200" ]; then
+              echo "  Release patched-${SHORT} already exists, skipping"
+              continue
+            fi
+
+            # Checkout the upstream commit
+            git checkout $UPSTREAM_HASH --detach
+
+            # Try to apply the patch
+            if git apply --check /tmp/string-io-patch.patch 2>/dev/null; then
+              git apply /tmp/string-io-patch.patch
+              echo "  Patch applied cleanly"
+            else
+              echo "  WARNING: Patch does not apply cleanly to ${SHORT}, skipping"
+              git checkout -- . 2>/dev/null
+              continue
+            fi
+
+            # Build
+            echo "  Building..."
+            BUILD_START=$(date +%s)
+            if cargo build --release --bin propolis-server 2>&1 | tail -3; then
+              BUILD_END=$(date +%s)
+              BUILD_TIME=$((BUILD_END - BUILD_START))
+              echo "  Built in ${BUILD_TIME}s"
+
+              # Package
+              gzip -c $CARGO_TARGET_DIR/release/propolis-server > propolis-server.gz
+              sha256sum propolis-server.gz > propolis-server.gz.sha256
+              sed "s/__RELEASE_TAG__/patched-${SHORT}/" patch-propolis.sh > patch-propolis-release.sh 2>/dev/null || true
+              chmod +x patch-propolis-release.sh 2>/dev/null || true
+
+              # Create release using gh CLI (softprops can't loop)
+              RELEASE_FILES="propolis-server.gz propolis-server.gz.sha256"
+              if [ -f patch-propolis-release.sh ]; then
+                RELEASE_FILES="$RELEASE_FILES patch-propolis-release.sh"
+              fi
+
+              # Use GitHub API directly
+              RELEASE_BODY="Pre-built propolis-server with string I/O emulation patch.
+
+              - Upstream: oxidecomputer/propolis@${SHORT}
+              - Commit message: ${MSG}
+              - Built on: helios01
+              - Build time: ${BUILD_TIME}s"
+
+              # Create release via API
+              RELEASE_ID=$(curl -s -X POST \
+                -H "Authorization: token ${{ github.token }}" \
+                -H "Accept: application/vnd.github.v3+json" \
+                "https://api.github.com/repos/${{ github.repository }}/releases" \
+                -d "{
+                  \"tag_name\": \"patched-${SHORT}\",
+                  \"target_commitish\": \"string-io-emulation\",
+                  \"name\": \"propolis-server patched (upstream ${SHORT})\",
+                  \"body\": $(echo "$RELEASE_BODY" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'),
+                  \"draft\": false,
+                  \"prerelease\": false
+                }" | python3 -c "import json,sys; print(json.load(sys.stdin).get('id',''))")
+
+              if [ -n "$RELEASE_ID" ] && [ "$RELEASE_ID" != "None" ]; then
+                # Upload assets
+                for FILE in $RELEASE_FILES; do
+                  CONTENT_TYPE="application/octet-stream"
+                  if echo "$FILE" | grep -q "\.gz$"; then
+                    CONTENT_TYPE="application/gzip"
+                  fi
+                  curl -s -X POST \
+                    -H "Authorization: token ${{ github.token }}" \
+                    -H "Content-Type: ${CONTENT_TYPE}" \
+                    --data-binary "@${FILE}" \
+                    "https://uploads.github.com/repos/${{ github.repository }}/releases/${RELEASE_ID}/assets?name=${FILE}" > /dev/null
+                  echo "  Uploaded ${FILE}"
+                done
+                echo "  Release patched-${SHORT} created"
+              else
+                echo "  WARNING: Failed to create release for ${SHORT}"
+              fi
+
+              # Clean up artifacts
+              rm -f propolis-server.gz propolis-server.gz.sha256 patch-propolis-release.sh
+            else
+              echo "  WARNING: Build failed for ${SHORT}, skipping"
+            fi
+
+            # Reset for next iteration
+            git checkout -- . 2>/dev/null
+          done
+
+          # Return to string-io-emulation
+          git checkout string-io-emulation
+
+env:
+  CARGO_TARGET_DIR: /home/swherdman/cache/propolis-target
