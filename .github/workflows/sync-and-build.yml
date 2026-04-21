@@ -164,7 +164,13 @@ jobs:
         if: steps.commits.outputs.count != '0'
         run: |
           git checkout -B master origin/master
+          PREV_MASTER=$(git rev-parse master)
           git merge upstream/master --ff-only
+          # Upstream may modify .github/workflows/ — restore ours to avoid needing workflows permission
+          if ! git diff --quiet $PREV_MASTER HEAD -- .github/workflows/; then
+            git checkout $PREV_MASTER -- .github/workflows/
+            git commit -m "ci: preserve local workflows during upstream sync [skip ci]"
+          fi
           git push origin master
 
       - name: Rebase patch branch
