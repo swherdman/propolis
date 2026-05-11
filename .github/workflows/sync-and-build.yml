@@ -163,15 +163,16 @@ jobs:
       - name: Sync master with upstream
         if: steps.commits.outputs.count != '0'
         run: |
-          git checkout -B master origin/master
-          PREV_MASTER=$(git rev-parse master)
-          git merge upstream/master --ff-only
-          # Upstream may modify .github/workflows/ — restore ours to avoid needing workflows permission
-          if ! git diff --quiet $PREV_MASTER HEAD -- .github/workflows/; then
-            git checkout $PREV_MASTER -- .github/workflows/
+          # Hard-reset to upstream — works even when a prior workflow-preservation
+          # commit caused origin/master to diverge from upstream/master.
+          git checkout -B master upstream/master
+          # Restore our workflow files if upstream changed them (we lack the
+          # workflows permission needed to push workflow file changes).
+          git checkout origin/master -- .github/workflows/
+          if ! git diff --cached --quiet; then
             git commit -m "ci: preserve local workflows during upstream sync [skip ci]"
           fi
-          git push origin master
+          git push origin master --force-with-lease
 
       - name: Rebase patch branch
         if: steps.commits.outputs.count != '0'
